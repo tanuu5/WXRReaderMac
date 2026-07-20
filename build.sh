@@ -12,6 +12,8 @@ APP="build/書庫.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/WXRReader "$APP/Contents/MacOS/WXRReader"
+# デバッグシンボルを除去（ビルドマシンのローカルパス＝ユーザー名等がバイナリに残るのを防ぐ）
+strip -Sx "$APP/Contents/MacOS/WXRReader"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 [ -f Resources/AppIcon.icns ] && cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
