@@ -16,6 +16,12 @@ noteなどのWXRバックアップ（WordPress eXtended RSS形式の.xml）を�
 - **キーボード** — `/` 検索、`j` / `k` 前後記事、`Esc` 戻る・クリア
 - **Spotlight連携** — 記事をmacOSのSpotlight（⌘Space）から検索でき、結果クリックで該当記事が直接開く。索引はローカルのみ
 
+## Claude連携（別パッケージ）
+
+同じバックアップをClaude Desktopから検索・閲覧したい場合は、MCP拡張機能 `shoko.mcpb` を用意しています。ダウンロードしてダブルクリックするだけで入り、設定ファイルの編集は不要です。アプリとは独立して動くので、書庫を起動していなくても使えます。
+
+詳しくは [mcpb/README.md](mcpb/README.md) をご覧ください。
+
 ## 動作環境
 
 - macOS 13 Ventura 以降
@@ -50,6 +56,7 @@ Sources/WXRReader/
   Views/               # SwiftUIビュー一式
 build.sh               # .appを組み立てる
 release.sh             # 配布用zipを作る
+mcpb/                  # Claude Desktop用のMCP拡張機能（Node製・アプリとは独立）
 ```
 
 ## ライセンス

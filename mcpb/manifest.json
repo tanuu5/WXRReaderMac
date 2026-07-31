@@ -1,0 +1,64 @@
+{
+  "manifest_version": "0.3",
+  "name": "shoko",
+  "display_name": "書庫 — ブログアーカイブ検索",
+  "version": "1.0.0",
+  "description": "noteなどのWXRバックアップ（.xml）をローカルで検索・閲覧できるようにします。",
+  "long_description": "noteやWordPressのバックアップ（WordPress eXtended RSS形式の.xml）を読み込み、Claudeから過去記事を検索・閲覧できるようにする拡張機能です。\n\n「去年書いたあの記事の内容を教えて」「このテーマについて前に何を書いたか」といった質問に、実際の記事本文をもとに答えられるようになります。\n\n処理はすべてお使いのMac内で完結し、記事の内容が外部に送信されることはありません。バックアップを新しいものに入れ替えた場合も、自動で読み直します。\n\nmacOSアプリ「書庫」(WXRReaderMac) と同じ解析ロジックを使っていますが、この拡張機能単体で動作します。アプリのインストールは不要です。",
+  "author": {
+    "name": "たぬ",
+    "url": "https://github.com/tanuu5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tanuu5/WXRReaderMac.git"
+  },
+  "homepage": "https://github.com/tanuu5/WXRReaderMac",
+  "documentation": "https://github.com/tanuu5/WXRReaderMac/blob/main/mcpb/README.md",
+  "support": "https://github.com/tanuu5/WXRReaderMac/issues",
+  "icon": "icon.png",
+  "license": "MIT",
+  "keywords": ["note", "blog", "wxr", "archive", "search", "wordpress"],
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "SHOKO_WXR_DIR": "${user_config.wxr_dir}"
+      }
+    }
+  },
+  "user_config": {
+    "wxr_dir": {
+      "type": "directory",
+      "title": "バックアップフォルダ",
+      "description": "noteからダウンロードしたバックアップ（.xml を含むフォルダ）を選んでください。zipは展開しておく必要があります。サブフォルダの中の .xml も読みます。",
+      "required": true,
+      "multiple": false,
+      "default": "${DOCUMENTS}"
+    }
+  },
+  "tools": [
+    {
+      "name": "library_info",
+      "description": "蔵書全体の概要（記事数・期間・カテゴリ・タグ）を返す"
+    },
+    {
+      "name": "search_articles",
+      "description": "記事を検索する（AND / OR、カテゴリ・タグ・期間で絞り込み）"
+    },
+    {
+      "name": "get_article",
+      "description": "記事1件の本文を取得する（Markdown / HTML / プレーンテキスト）"
+    }
+  ],
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "win32"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}
