@@ -17,7 +17,7 @@ const path = require('path');
 const readline = require('readline');
 
 const SERVER_NAME = 'shoko';
-const SERVER_VERSION = '1.1.2';
+const SERVER_VERSION = '1.1.3';
 
 const WXR_DIR = process.env.SHOKO_WXR_DIR || '';
 
@@ -722,6 +722,13 @@ const SIMILAR_LEVELS = {
 const STANDOUT_RATIO = 1.7;
 
 /**
+ * この語数を下回ったら、点数からは何も言えないものとして扱う。
+ * 点は「特徴語のうち何割を共有しているか」なので、1語しか渡さなければ
+ * その語を含む記事はすべて100点になる。判定の材料にならない。
+ */
+const MIN_TERMS = 5;
+
+/**
  * ある文章に近い記事を探す。
  *
  * 相手のタイトルに出る語は重く、本文にしか出ない語は軽く見る。
@@ -827,6 +834,17 @@ function toolFindSimilar(args) {
       '語の重なりでは近い記事が見つかりませんでした。ただしこの判定は語の一致に基づくもので、' +
       '同じ題材を別の言い回しで書いていれば見落とします。重要な確認なら、題材の固有名詞を' +
       'search_articles で直接引いて裏を取ってください。';
+  } else if (termCount < MIN_TERMS) {
+    // 語が少なすぎるときは点数から何も言えない。ここで likely を出すと、
+    // 「点数は当てにならない」と言いながらその点数を根拠にすることになる。
+    out.confidence = 'unclear';
+    out.note =
+      `照合に使えた特徴語が${termCount}語しかないため、点数からは何も判断できません` +
+      '（1語だけなら、その語を含む記事はすべて満点になります）。' +
+      '一覧は語が重なる記事というだけの意味です。題材を説明する文章を数行渡すか、' +
+      'search_articles で直接引いてください。' +
+      'なお、蔵書のタイトルに何度も出てくる語は、記事を絞り込めないため照合から外しています。' +
+      'そのせいで語数が減っている場合もあります。';
   } else {
     const top = hits[0].s;
     const likely = top >= level.likely || (top >= level.maybe && ratio >= STANDOUT_RATIO);
@@ -839,12 +857,6 @@ function toolFindSimilar(args) {
     if (!base) {
       out.note += ' 逆に、ここに出ていなくても別の言い回しで書いている可能性は残ります。';
     }
-  }
-
-  if (termCount < 5) {
-    out.note =
-      `照合に使えた特徴語が${termCount}語しかありません。点数は当てになりません（1語だけなら満点も出ます）。` +
-      '題材を説明する文章を数行渡すか、search_articles で直接引いてください。 ' + (out.note || '');
   }
   return out;
 }
