@@ -17,7 +17,7 @@ const path = require('path');
 const readline = require('readline');
 
 const SERVER_NAME = 'shoko';
-const SERVER_VERSION = '1.1.1';
+const SERVER_VERSION = '1.1.2';
 
 const WXR_DIR = process.env.SHOKO_WXR_DIR || '';
 
@@ -701,21 +701,25 @@ function weightOf(df, total) {
 const MAX_BODY_TERMS = 60;
 
 /**
- * 一致率の目安。点数は「渡した文章の特徴語のうち何割を共有しているか」なので、
+ * 足切り。点数は「渡した文章の特徴語のうち何割を共有しているか」なので、
  * 渡す文章が長いほど語が増え、どの記事も全部は覆えなくなって全体に下がる。
- * そのため企画メモを渡す場合と既存記事まるごとを渡す場合で基準が変わる。
- * 蔵書1008本で実測した分布は次のとおり。
+ * そのため企画メモを渡す場合と既存記事まるごとを渡す場合で水準が変わる。
  *
- *   企画メモ（数十〜百字）: 題材が重なる記事 32〜82 / 蔵書にない話題 5〜26
- *   既存記事まるごと      : 妥当な関連記事 15〜22 / 関連の薄いもの 9〜10
+ * 蔵書1008本で測ると、企画メモでは正解が32〜82、無関係な話題の最高が5〜26。
+ * 一見分かれているようで、メモの書き方を変えると正解が29台まで落ち、
+ * 無関係が26まで上がる。つまり両者の帯は重なっていて、
+ * 「何点以上なら同じ題材」と言い切れる境目は存在しない。
  *
- * 境目で切り捨てると本当の見落としが黙って消えるので、足切りは低めに置き、
- * 確度は confidence として明示する方針にしている。
+ * したがって点数で合否を出すことはせず、足切りは明らかな雑音を落とす位置に置き、
+ * 判断材料としては順位と、突出しているかどうか（confidence）を返す。
  */
 const SIMILAR_LEVELS = {
-  text: { floor: 15, confident: 30 },
-  article: { floor: 7, confident: 15 },
+  text: { floor: 15, likely: 30, maybe: 22 },
+  article: { floor: 7, likely: 15, maybe: 10 },
 };
+
+/** 点が中位でも、2位をこの倍率で引き離していれば「らしい」と見なす */
+const STANDOUT_RATIO = 1.7;
 
 /**
  * ある文章に近い記事を探す。
@@ -745,7 +749,7 @@ function similarTo(titleText, bodyText, excludeId, limit, floorAbs) {
     .sort((p, q) => (df.get(p.t) || 0) - (df.get(q.t) || 0))
     .slice(0, MAX_BODY_TERMS);
   add(body, 1);
-  if (!terms.size) return [];
+  if (!terms.size) return { hits: [], termCount: 0 };
 
   const w = (t) => weightOf(df.get(t) || 0, total);
   const weighted = [...terms.entries()].map(([t, v]) => ({ t, v: v * w(t) }));
@@ -769,9 +773,12 @@ function similarTo(titleText, bodyText, excludeId, limit, floorAbs) {
   scored.sort((p, q) => (q.s !== p.s ? q.s - p.s : (q.a.date || '') < (p.a.date || '') ? -1 : 1));
 
   // 上位から大きく離れたものは「たまたま語が重なっただけ」。足切りする。
-  if (!scored.length) return [];
+  if (!scored.length) return { hits: [], termCount: terms.size, ratio: 0 };
   const floor = Math.max(scored[0].s * 0.5, floorAbs);
-  return scored.filter((x) => x.s >= floor).slice(0, limit);
+  // 2位との比は足切り前の並びで取る。足切りで1件しか残らなかった場合でも、
+  // それが本当に抜けていたのか、単に全体が低かっただけなのかを区別するため。
+  const ratio = scored[1] && scored[1].s > 0 ? scored[0].s / scored[1].s : Infinity;
+  return { hits: scored.filter((x) => x.s >= floor).slice(0, limit), termCount: terms.size, ratio };
 }
 
 function toolFindSimilar(args) {
@@ -798,14 +805,15 @@ function toolFindSimilar(args) {
   }
 
   const level = base ? SIMILAR_LEVELS.article : SIMILAR_LEVELS.text;
-  const hits = similarTo(titleText, bodyText, base ? base.id : -1, limit, level.floor);
+  const { hits, termCount, ratio } = similarTo(titleText, bodyText, base ? base.id : -1, limit, level.floor);
   const out = {
     basis: base ? { id: base.id, title: base.title, date: base.date } : { text_length: (titleText + bodyText).length },
     total_candidates: hits.length,
+    terms_used: termCount,
     score_meaning:
       '渡した文章の特徴語のうち、その記事がどれだけ共有しているかの割合(0〜100)。' +
-      `今回の呼び方では、題材が重なるとみてよいのは${level.confident}以上。` +
-      '長い文章を渡すほど語が増えて全体が下がるため、絶対値の比較は同じ呼び方どうしでのみ意味がある。',
+      'この数字が意味を持つのは同じ結果の中での比較だけで、呼び出しをまたぐと水準が変わる。' +
+      '「何点以上なら同じ題材」という境目は存在しないので、点数で足切りせず、上位から本文を見て判断すること。',
     results: hits.map((h) => {
       const d = summarize(h.a, null);
       d.score = Math.round(h.s * 10) / 10;
@@ -819,14 +827,24 @@ function toolFindSimilar(args) {
       '語の重なりでは近い記事が見つかりませんでした。ただしこの判定は語の一致に基づくもので、' +
       '同じ題材を別の言い回しで書いていれば見落とします。重要な確認なら、題材の固有名詞を' +
       'search_articles で直接引いて裏を取ってください。';
-  } else if (hits[0].s >= level.confident) {
-    out.confidence = 'high';
-    out.note = '特徴語がはっきり重なっています。同じ題材を扱った記事である可能性が高いので、本文を確認してください。';
   } else {
-    out.confidence = 'low';
+    const top = hits[0].s;
+    const likely = top >= level.likely || (top >= level.maybe && ratio >= STANDOUT_RATIO);
+    out.confidence = likely ? 'likely' : 'unclear';
+    out.note = likely
+      ? '同じ題材を扱った記事がある可能性が高いと見ています（1位の点が高いか、2位を大きく引き離しています）。' +
+        'ただし判断はこの一覧ではなく、上位の本文を読んで決めてください。'
+      : '語がいくらか重なる記事はありますが、この並びだけでは同じ題材かどうか判断できません。' +
+        '無関係な文章を渡してもこの程度の候補は返ります。上位数件の本文を確認してください。';
+    if (!base) {
+      out.note += ' 逆に、ここに出ていなくても別の言い回しで書いている可能性は残ります。';
+    }
+  }
+
+  if (termCount < 5) {
     out.note =
-      '語がいくらか重なる記事はありますが、題材が同じとは限りません（この帯には無関係な記事も入ります）。' +
-      '本文を見て判断してください。逆に、本当に書いている記事がここに出ていない可能性もあります。';
+      `照合に使えた特徴語が${termCount}語しかありません。点数は当てになりません（1語だけなら満点も出ます）。` +
+      '題材を説明する文章を数行渡すか、search_articles で直接引いてください。 ' + (out.note || '');
   }
   return out;
 }
@@ -1009,7 +1027,8 @@ const TOOLS = [
       '(2) id / link で既存記事を渡して、関連記事や本文から張る自己引用リンクの候補を出す。' +
       'こちらの方が精度は高い。記事のidが分からないときは search_articles で先に引く。\n' +
       '判定は語の一致に基づくので、同じ題材を別の言い回しで書いていれば見落とす。' +
-      '結果には確度（confidence）と点数の意味（score_meaning）が付くので、それを見て判断すること。',
+      '点数に「何点以上なら同じ題材」という境目はない。信用してよいのは順位と、' +
+      '1位が他から離れているかどうか（confidence）だけで、最後は本文を見て判断すること。',
     inputSchema: {
       type: 'object',
       properties: {
