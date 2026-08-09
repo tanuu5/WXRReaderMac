@@ -17,7 +17,7 @@ const path = require('path');
 const readline = require('readline');
 
 const SERVER_NAME = 'shoko';
-const SERVER_VERSION = '1.1.0';
+const SERVER_VERSION = '1.1.1';
 
 const WXR_DIR = process.env.SHOKO_WXR_DIR || '';
 
@@ -524,12 +524,20 @@ function toolSearch(args) {
       return d;
     }),
   };
+  if (sortMode === 'relevance' && out.results.length) {
+    out.score_meaning =
+      '検索語との関連度。珍しい語ほど、またタイトルに含まれる記事ほど高い。' +
+      '日付は考慮していないので、この並びは新しさとは無関係。';
+  }
   if (sorted.length > limit) {
     const order = sortMode === 'relevance' ? '関連度の高い順に' : '新しい順に';
     const filters = hasTaxonomy() ? 'date_from / date_to / tag / category' : 'date_from / date_to';
     out.note =
       `該当${sorted.length}件のうち${order}${limit}件だけ返しています。` +
       `全件を読み込もうとせず、${filters} で絞り込むか、検索語を具体的にしてください。`;
+    if (sortMode === 'relevance') {
+      out.note += ' 新しいものが知りたい場合は sort="date" か date_from を使ってください。';
+    }
   }
   return out;
 }
@@ -583,45 +591,71 @@ function isHiraganaOnly(tok) {
 }
 
 /**
+ * 文字種を返す。h=ひらがな k=カタカナ j=漢字 a=英数字 null=区切り。
+ * 日本語には語の区切りに空白がないため、文字種の変わり目を語の境目とみなす。
+ * 完全ではないが、辞書なしで「クラムボン」「宮沢賢治」を1語として取り出せる。
+ */
+function charClass(c) {
+  if (c < 128) {
+    if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)) return 'a';
+    return null;
+  }
+  if (c >= 0x3041 && c <= 0x309f) return 'h';
+  if (c === 0x30fc) return 'k'; // 長音符はカタカナ側に付ける
+  if (c >= 0x30a0 && c <= 0x30ff) return 'k';
+  if (c === 0x3005 || c === 0x3007) return 'j'; // 々 〇
+  if (c >= 0x3400 && c <= 0x4dbf) return 'j';
+  if (c >= 0x4e00 && c <= 0x9fff) return 'j';
+  return null; // 句読点・記号・絵文字はすべて区切り
+}
+
+/**
  * 照合のもとにする文章から語を取り出す。
- * 日本語をbigramで刻むと「アップデート」のような長い語が4つの断片になり、
- * 短くて珍しい「書庫」1つより重くなってしまう。語の長さで割って、
- * 1つの語が持ち込める重みを語の長さによらず一定にする。
+ *
+ * bigramで刻むと「アップデート」のような長い語が4つの断片になり、
+ * 短くて珍しい「書庫」1つより重くなる。そこで語の長さで割るのだが、
+ * 何を「1語」と数えるかを間違えると破綻する。日本語の文は句読点まで含めて
+ * 文字コードが連続しているので、素朴に区切ると一文まるごとが1語になり、
+ * 100字のメモが1/99ずつに薄まって何も効かなくなる（v1.1.0のバグ）。
+ * 文字種の変わり目で切ることで、語らしい単位で割れるようにしている。
+ *
  * 返り値は { t: 語, scale: 重みの倍率 } の配列。
  */
 function baseTokens(text) {
-  const runs = [];
-  let word = '';
-  let run = [];
-  const flushWord = () => {
-    if (word.length >= 3) runs.push([word.toLowerCase()]);
-    word = '';
-  };
-  const flushRun = () => {
-    if (run.length >= 2) {
-      const g = [];
-      for (let i = 0; i < run.length - 1; i++) g.push(run[i] + run[i + 1]);
-      runs.push(g);
-    }
-    run = [];
+  const segs = [];
+  let cur = '';
+  let curCls = null;
+  const flush = () => {
+    if (cur && curCls) segs.push({ s: cur, cls: curCls });
+    cur = '';
   };
   for (const ch of text) {
-    const c = ch.codePointAt(0);
-    const isAlnum =
-      c < 128 && ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122));
-    const isCJK = (c >= 0x3000 && c <= 0x9fff) || (c >= 0xff00 && c <= 0xffef);
-    if (isAlnum) word += ch;
-    else flushWord();
-    if (isCJK) run.push(ch);
-    else flushRun();
+    const cls = charClass(ch.codePointAt(0));
+    if (cls !== curCls) {
+      flush();
+      curCls = cls;
+    }
+    if (cls) cur += ch;
   }
-  flushWord();
-  flushRun();
+  flush();
 
   const best = new Map();
-  for (const g of runs) {
-    const scale = 1 / g.length;
-    for (const t of g) {
+  for (const { s, cls } of segs) {
+    if (cls === 'h') continue; // ひらがなだけの区間は「する」「こと」等の機能語
+    let toks;
+    if (cls === 'a') {
+      if (s.length < 3) continue;
+      toks = [s];
+    } else if (s.length === 1) {
+      // 一文字の漢字は「取」「込」のように文中のどこにでも現れる。
+      // 本文4400字に対する部分一致では当たって当然なので、照合には使わない。
+      continue;
+    } else {
+      toks = [];
+      for (let i = 0; i < s.length - 1; i++) toks.push(s[i] + s[i + 1]);
+    }
+    const scale = 1 / toks.length;
+    for (const t of toks) {
       if (isHiraganaOnly(t)) continue;
       if (!best.has(t) || best.get(t) < scale) best.set(t, scale);
     }
@@ -663,45 +697,80 @@ function weightOf(df, total) {
   return idf * idf;
 }
 
+/** 照合に使う語の上限。本文からは語が数百出るので、珍しい順に絞って総当たりの回数を抑える */
+const MAX_BODY_TERMS = 60;
+
+/**
+ * 一致率の目安。点数は「渡した文章の特徴語のうち何割を共有しているか」なので、
+ * 渡す文章が長いほど語が増え、どの記事も全部は覆えなくなって全体に下がる。
+ * そのため企画メモを渡す場合と既存記事まるごとを渡す場合で基準が変わる。
+ * 蔵書1008本で実測した分布は次のとおり。
+ *
+ *   企画メモ（数十〜百字）: 題材が重なる記事 32〜82 / 蔵書にない話題 5〜26
+ *   既存記事まるごと      : 妥当な関連記事 15〜22 / 関連の薄いもの 9〜10
+ *
+ * 境目で切り捨てると本当の見落としが黙って消えるので、足切りは低めに置き、
+ * 確度は confidence として明示する方針にしている。
+ */
+const SIMILAR_LEVELS = {
+  text: { floor: 15, confident: 30 },
+  article: { floor: 7, confident: 15 },
+};
+
 /**
  * ある文章に近い記事を探す。
- * タイトル由来の語を重く見て、本文由来の語は「相手のタイトルに出るか」だけを見る。
- * 本文どうしの総当たりは1000本規模だと重すぎるうえ、精度もさして上がらない。
+ *
+ * 相手のタイトルに出る語は重く、本文にしか出ない語は軽く見る。
+ * 本文まで見るのは、題材に触れていてもタイトルには出さない記事があるため。
+ * これを省くと「書いたのに見つからない」が起きる。
  */
-function similarTo(titleText, bodyText, excludeId, limit) {
+function similarTo(titleText, bodyText, excludeId, limit, floorAbs) {
   const df = titleDF();
   const total = library.articles.length;
-  const titleToks = baseTokens(normalizeText(titleText || '').toLowerCase());
-  let bodyToks = baseTokens(normalizeText((bodyText || '').slice(0, 3000)).toLowerCase());
-
-  // 本文からは語が数千出るので、蔵書の5%を超えるタイトルに現れる常用語は捨てる。
-  // 残るのは、その文章を他と区別している語だけになる。
   const cut = Math.max(3, Math.floor(total * 0.05));
-  bodyToks = bodyToks.filter((x) => (df.get(x.t) || 0) <= cut);
-  if (!titleToks.length && !bodyToks.length) return [];
+
+  // 語 → 重みの倍率。想定タイトル由来の語は、本文由来より重く扱う。
+  const terms = new Map();
+  const add = (list, srcWeight) => {
+    for (const { t, scale } of list) {
+      const v = scale * srcWeight;
+      if (!terms.has(t) || terms.get(t) < v) terms.set(t, v);
+    }
+  };
+  add(baseTokens(normalizeText(titleText || '').toLowerCase()), 3);
+
+  // 蔵書の5%を超えるタイトルに現れる常用語を捨て、残りを珍しい順に上位だけ使う。
+  const body = baseTokens(normalizeText((bodyText || '').slice(0, 3000)).toLowerCase())
+    .filter((x) => (df.get(x.t) || 0) <= cut)
+    .sort((p, q) => (df.get(p.t) || 0) - (df.get(q.t) || 0))
+    .slice(0, MAX_BODY_TERMS);
+  add(body, 1);
+  if (!terms.size) return [];
 
   const w = (t) => weightOf(df.get(t) || 0, total);
+  const weighted = [...terms.entries()].map(([t, v]) => ({ t, v: v * w(t) }));
+
+  // 満点＝渡された文章の特徴語が、すべて相手のタイトルに出ている状態。
+  // これで割ることで、点数が入力の長さに左右されなくなり、
+  // 「その文章を特徴づける語のうち何割を共有しているか」として読めるようになる。
+  const full = weighted.reduce((n, x) => n + 3 * x.v, 0) || 1;
+
   const scored = [];
   for (const x of library.articles) {
     if (x.id === excludeId) continue;
     if (x.postType !== 'post') continue;
     let s = 0;
-    for (const { t, scale } of titleToks) {
-      if (x.titleLower.includes(t)) s += 3 * w(t) * scale;
-      else if (x.plainLower.includes(t)) s += w(t) * scale;
+    for (const { t, v } of weighted) {
+      if (x.titleLower.includes(t)) s += 3 * v;
+      else if (x.plainLower.includes(t)) s += v;
     }
-    if (bodyToks.length) {
-      const xt = titleTokensOf(x);
-      for (const { t, scale } of bodyToks) if (xt.has(t)) s += w(t) * scale;
-    }
-    if (s > 0) scored.push({ a: x, s });
+    if (s > 0) scored.push({ a: x, s: (100 * s) / full });
   }
   scored.sort((p, q) => (q.s !== p.s ? q.s - p.s : (q.a.date || '') < (p.a.date || '') ? -1 : 1));
 
   // 上位から大きく離れたものは「たまたま語が重なっただけ」。足切りする。
-  // 実データで測ると、無関係な文章は最高でも2点台、題材が重なる記事は10点以上に出る。
   if (!scored.length) return [];
-  const floor = Math.max(scored[0].s * 0.2, 6);
+  const floor = Math.max(scored[0].s * 0.5, floorAbs);
   return scored.filter((x) => x.s >= floor).slice(0, limit);
 }
 
@@ -728,22 +797,36 @@ function toolFindSimilar(args) {
     bodyText = base.plain;
   }
 
-  const hits = similarTo(titleText, bodyText, base ? base.id : -1, limit);
+  const level = base ? SIMILAR_LEVELS.article : SIMILAR_LEVELS.text;
+  const hits = similarTo(titleText, bodyText, base ? base.id : -1, limit, level.floor);
   const out = {
     basis: base ? { id: base.id, title: base.title, date: base.date } : { text_length: (titleText + bodyText).length },
     total_candidates: hits.length,
+    score_meaning:
+      '渡した文章の特徴語のうち、その記事がどれだけ共有しているかの割合(0〜100)。' +
+      `今回の呼び方では、題材が重なるとみてよいのは${level.confident}以上。` +
+      '長い文章を渡すほど語が増えて全体が下がるため、絶対値の比較は同じ呼び方どうしでのみ意味がある。',
     results: hits.map((h) => {
       const d = summarize(h.a, null);
       d.score = Math.round(h.s * 10) / 10;
       return d;
     }),
   };
+
   if (!hits.length) {
-    out.note = '近い記事は見つかりませんでした。同じ題材を扱った過去記事はない可能性が高いです。';
-  } else if (hits[0].s < 15) {
+    out.confidence = 'none';
     out.note =
-      'スコアが低めです（題材がはっきり重なる場合は数十点になります）。' +
-      '語がたまたま重なっただけの可能性があるため、本文を確認してから判断してください。';
+      '語の重なりでは近い記事が見つかりませんでした。ただしこの判定は語の一致に基づくもので、' +
+      '同じ題材を別の言い回しで書いていれば見落とします。重要な確認なら、題材の固有名詞を' +
+      'search_articles で直接引いて裏を取ってください。';
+  } else if (hits[0].s >= level.confident) {
+    out.confidence = 'high';
+    out.note = '特徴語がはっきり重なっています。同じ題材を扱った記事である可能性が高いので、本文を確認してください。';
+  } else {
+    out.confidence = 'low';
+    out.note =
+      '語がいくらか重なる記事はありますが、題材が同じとは限りません（この帯には無関係な記事も入ります）。' +
+      '本文を見て判断してください。逆に、本当に書いている記事がここに出ていない可能性もあります。';
   }
   return out;
 }
@@ -796,9 +879,21 @@ function toolTopicTimeline(args) {
     picked[picked.length - 1] = list[list.length - 1];
     out.note =
       `該当${list.length}件を、期間全体が見渡せるよう${limit}件に間引いています。` +
-      '特定の時期を詳しく見るときは date_from / date_to で範囲を狭めてください。';
+      '間引いた一覧はタイトルしか返さないため、話題が広すぎると並べても流れが読めません。' +
+      '検索語を具体的にするか、date_from / date_to で時期を区切って呼び直すほうが有用です。';
   }
-  out.articles = picked.map((a) => ({ id: a.id, date: a.date, title: a.title || '(無題)' }));
+
+  // 少数なら抜粋も付ける。タイトルだけでは、その記事が話題に
+  // どう関わっているのか分からないことが多いため。
+  const withSnippet = picked.length <= 15;
+  out.articles = picked.map((a) => {
+    const d = { id: a.id, date: a.date, title: a.title || '(無題)' };
+    if (withSnippet) d.snippet = snippet(a, groups.flat(), 80);
+    return d;
+  });
+  if (!withSnippet && !out.note) {
+    out.note = '一覧は日付とタイトルのみです。中身が要る記事は get_article で個別に取ってください。';
+  }
   return out;
 }
 
@@ -877,39 +972,51 @@ const TOOLS = [
     name: 'search_articles',
     description:
       '書庫から記事を検索する。queryはスペース区切りでAND、単語 OR でOR検索。' +
-      'タイトル・本文・カテゴリ・タグを部分一致で見る。既定では関連度順に並ぶ（珍しい語ほど、' +
-      'またタイトルに含まれる記事ほど上位）。返るのは一覧（タイトル・日付・該当箇所の抜粋）で、本文は含まない。' +
-      '本文が必要な記事だけを get_article で個別に取ること。' +
-      '蔵書は1000本規模あるため、該当が多いときは全件を取ろうとせず、' +
-      '検索語を具体的にするか date_from / date_to で絞る。',
+      'タイトル・本文・カテゴリ・タグを部分一致で見る。返るのは一覧（タイトル・日付・該当箇所の抜粋）で、' +
+      '本文は含まない。本文が必要な記事だけを get_article で個別に取ること。\n' +
+      '既定は関連度順（珍しい語ほど、またタイトルに含まれる記事ほど上位）。' +
+      '順位は日付を一切見ないので、3年前の記事が1位に来ることが普通にある。' +
+      '「最近」「直近」「ここ数か月」のように新しさが問われている質問では、' +
+      'sort="date" にするか date_from で期間を切ること。既定のまま呼ぶと古い記事が並んで質問に答えられない。\n' +
+      '蔵書は1000本規模あるため、該当が多いときは全件を取ろうとせず、検索語を具体的にするか期間で絞る。',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: "検索語。例: 'Claude 移植'、'Swift OR SwiftUI'。空なら絞り込みのみ" },
-        category: { type: 'string', description: 'カテゴリで絞り込む（部分一致）。蔵書に分類がある場合のみ有効' },
-        tag: { type: 'string', description: 'タグで絞り込む（部分一致）。蔵書に分類がある場合のみ有効' },
-        post_type: { type: 'string', description: 'post / page / all（既定: all）' },
-        date_from: { type: 'string', description: 'この日以降 YYYY-MM-DD' },
+        sort: {
+          type: 'string',
+          enum: ['relevance', 'date'],
+          description:
+            'relevance=関連度順（検索語があるときの既定）。date=新しい順。' +
+            '「最近書いたもの」を聞かれたら date にする',
+        },
+        date_from: { type: 'string', description: 'この日以降 YYYY-MM-DD。「最近」の質問ではこれで期間を切るのが確実' },
         date_to: { type: 'string', description: 'この日以前 YYYY-MM-DD' },
-        sort: { type: 'string', description: 'relevance（既定・検索語がある場合） / date（新しい順）' },
         limit: { type: 'integer', description: '最大件数（既定20、上限50）。多く取るほど文脈を消費するので、まず既定のまま試すこと' },
+        post_type: { type: 'string', enum: ['post', 'page', 'all'], description: '投稿タイプ（既定: all）。noteの蔵書はすべて post なので通常は指定不要' },
+        category: { type: 'string', description: 'カテゴリで絞り込む（部分一致）。蔵書に分類がある場合のみ有効。noteのバックアップには分類が無い' },
+        tag: { type: 'string', description: 'タグで絞り込む（部分一致）。蔵書に分類がある場合のみ有効。noteのバックアップには分類が無い' },
       },
     },
   },
   {
     name: 'find_similar',
     description:
-      'ある文章に近い過去記事を探す。用途は2つ。' +
-      '(1) これから書く記事の題材を text に渡して、同じネタを過去に書いていないか確認する。' +
+      'ある文章に近い過去記事を探す。用途は2つ。\n' +
+      '(1) これから書く記事の題材を text に、想定タイトルを title_text に渡して、' +
+      '同じネタを過去に書いていないか確認する。検索語を思いつく必要がないので、' +
+      '「この話、前に書いたっけ」の確認にはこちらを使う。title_text は指定すると精度が上がる。\n' +
       '(2) id / link で既存記事を渡して、関連記事や本文から張る自己引用リンクの候補を出す。' +
-      '検索語を思いつく必要がないので、「この話、前に書いたっけ」の確認にはこちらを使う。',
+      'こちらの方が精度は高い。記事のidが分からないときは search_articles で先に引く。\n' +
+      '判定は語の一致に基づくので、同じ題材を別の言い回しで書いていれば見落とす。' +
+      '結果には確度（confidence）と点数の意味（score_meaning）が付くので、それを見て判断すること。',
     inputSchema: {
       type: 'object',
       properties: {
-        text: { type: 'string', description: '下書きや企画メモの本文。数百字あれば十分' },
-        title_text: { type: 'string', description: '想定タイトル（textと併用可）。タイトル由来の語は重く見る' },
-        id: { type: 'integer', description: '基準にする記事のid' },
-        link: { type: 'string', description: '基準にする記事のURL' },
+        text: { type: 'string', description: '下書きや企画メモの本文。数百字あれば十分。固有名詞が入っているほど当たる' },
+        title_text: { type: 'string', description: '想定タイトル。textと併用する。ここに書かれた語は本文由来の語より重く見るため、指定すると精度が上がる' },
+        id: { type: 'integer', description: '基準にする既存記事のid（search_articlesの結果から取る）' },
+        link: { type: 'string', description: '基準にする既存記事のURL' },
         limit: { type: 'integer', description: '最大件数（既定10、上限30）' },
       },
     },
@@ -917,14 +1024,17 @@ const TOOLS = [
   {
     name: 'topic_timeline',
     description:
-      'ある話題について、いつ何を書いてきたかを古い順に並べ、月ごとの本数も返す。' +
-      '「このテーマに自分はどう向き合ってきたか」「主張はいつ変わったか」を追うときに使う。' +
-      '1件あたり日付とタイトルだけに切り詰めるので、search_articles より多くの記事を見渡せる。' +
-      '該当が多い場合は期間全体が見えるよう間引いて返す。',
+      'ある話題について書いた記事を古い順に並べ、月ごとの本数も返す。' +
+      'ある時期に集中しているのか、ずっと書き続けているのかを掴むのに使う。\n' +
+      '返るのは日付とタイトル（該当が15件以下なら短い抜粋も付く）で、記事の主張そのものは含まない。' +
+      '「主張がどう変わったか」まで答えるには、ここで当たりをつけてから get_article で数本読む必要がある。' +
+      'これは一覧であって答えではない。\n' +
+      '該当が数百件になると、タイトルだけを並べても話の流れは読めない。' +
+      'その場合は query を具体的にするか、date_from / date_to で時期を区切って呼び直すこと。',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: "話題を表す検索語。例: 'Claude 料金'" },
+        query: { type: 'string', description: "話題を表す検索語。具体的なほど有用。例: 'Claude 料金' は良いが 'Claude' だけでは広すぎる" },
         date_from: { type: 'string', description: 'この日以降 YYYY-MM-DD' },
         date_to: { type: 'string', description: 'この日以前 YYYY-MM-DD' },
         limit: { type: 'integer', description: '最大件数（既定40、上限100）' },
