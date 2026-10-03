@@ -135,7 +135,7 @@ enum Related {
                 .prefix(max).map { $0.0 }
         }
 
-        let titleToks = extractTokens(a.title)
+        let titleToks = extractTokens(a.titleLower)
         let bodyToks = extractTokens(String(a.plainLower.prefix(3000)))
         if titleToks.isEmpty { return [] }
 

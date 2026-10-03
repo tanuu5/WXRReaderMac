@@ -191,6 +191,7 @@ struct HeatmapView: View {
     private static let unit: CGFloat = cell + gap
     private static let leftPad: CGFloat = 26
     private static let topPad: CGFloat = 20
+    private static let contentID = "heatmap"
 
     /// 週ごとの日付列（先頭週の日曜から末尾週の土曜まで）
     private var weeks: [[Date]] {
@@ -222,20 +223,27 @@ struct HeatmapView: View {
             let wks = weeks
             let w = Self.leftPad + CGFloat(wks.count) * Self.unit + 4
             let h = Self.topPad + 7 * Self.unit + 4
-            ScrollView(.horizontal, showsIndicators: true) {
-                canvas(wks: wks)
-                    .frame(width: w, height: h)
-                    .overlay(alignment: .topLeading) {
-                        if let label = hoverLabel {
-                            Text(label)
-                                .font(.system(size: 11))
-                                .foregroundColor(Theme.surface)
-                                .padding(.horizontal, 8).padding(.vertical, 4)
-                                .background(RoundedRectangle(cornerRadius: 4).fill(Theme.text))
-                                .offset(x: max(0, hoverPoint.x - 40), y: max(0, hoverPoint.y - 30))
-                                .allowsHitTesting(false)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: true) {
+                    canvas(wks: wks)
+                        .frame(width: w, height: h)
+                        .overlay(alignment: .topLeading) {
+                            if let label = hoverLabel {
+                                Text(label)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(Theme.surface)
+                                    .padding(.horizontal, 8).padding(.vertical, 4)
+                                    .background(RoundedRectangle(cornerRadius: 4).fill(Theme.text))
+                                    .offset(x: max(0, hoverPoint.x - 40), y: max(0, hoverPoint.y - 30))
+                                    .allowsHitTesting(false)
+                            }
                         }
-                    }
+                        .id(Self.contentID)
+                }
+                // 開いたときは最新の週（右端）を見せる。古い週は左へスクロールして見る
+                .onAppear {
+                    DispatchQueue.main.async { proxy.scrollTo(Self.contentID, anchor: .trailing) }
+                }
             }
         }
     }

@@ -238,11 +238,12 @@ final class AppState: ObservableObject {
     func applyFilters() {
         var list = articles
         if typeFilter != "all" { list = list.filter { $0.postType == typeFilter } }
-        let q = query.trimmingCharacters(in: .whitespaces)
+        // 全角スペース・全角の ＯＲ もここで半角にそろう
+        let q = Article.searchKey(query).trimmingCharacters(in: .whitespaces)
         if !q.isEmpty {
             // スペース区切り=AND、"OR"（単語）=OR
             let orGroups = Self.splitOR(q)
-                .map { $0.lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init) }
+                .map { $0.split(whereSeparator: { $0.isWhitespace }).map(String.init) }
                 .filter { !$0.isEmpty }
             if !orGroups.isEmpty {
                 list = list.filter { a in

@@ -16,13 +16,18 @@ struct Article: Identifiable, Hashable {
     var tags: [String]
     var sourceFile: String
 
-    // 検索対象: タイトル + 本文 + カテゴリ + タグ（termは小文字前提）
+    // 検索対象: タイトル + 本文 + カテゴリ + タグ（termは searchKey で正規化済みの前提）
     func matches(_ term: String) -> Bool {
         if titleLower.contains(term) { return true }
         if plainLower.contains(term) { return true }
-        if categories.contains(where: { $0.lowercased().contains(term) }) { return true }
-        if tags.contains(where: { $0.lowercased().contains(term) }) { return true }
+        if categories.contains(where: { Self.searchKey($0).contains(term) }) { return true }
+        if tags.contains(where: { Self.searchKey($0).contains(term) }) { return true }
         return false
+    }
+
+    /// 検索用の正規化。NFKCで全角英数・半角カナなどをそろえ（ＡＩ→AI、ｻｰﾊﾞ→サーバ）、小文字にする
+    static func searchKey(_ s: String) -> String {
+        s.precomposedStringWithCompatibilityMapping.lowercased()
     }
 
     var dateString: String {

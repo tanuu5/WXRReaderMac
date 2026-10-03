@@ -94,11 +94,11 @@ enum WXRParser {
         if date == nil, !pubDateStr.isEmpty { date = Fmt.rfc822.date(from: pubDateStr) }
 
         return Article(
-            title: title, titleLower: title.lowercased(), link: link, date: date,
+            title: title, titleLower: Article.searchKey(title), link: link, date: date,
             postType: postType, status: status,
             excerpt: String(plain.prefix(400)).trimmingCharacters(in: .whitespacesAndNewlines),
             contentHTML: content,
-            plainLower: plain.lowercased(),
+            plainLower: Article.searchKey(plain),
             wordCount: plain.count,
             categories: cats, tags: tags,
             sourceFile: sourceFile
