@@ -9,7 +9,8 @@ cd "$(dirname "$0")"
 VERSION=$(defaults read "$(pwd)/build/書庫.app/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "1.0")
 ZIP="build/Shoko-${VERSION}.zip"
 rm -f "$ZIP"
-ditto -c -k --keepParent "build/書庫.app" "$ZIP"
+# 拡張属性（._ファイル）は配布に不要なので含めない
+ditto -c -k --norsrc --noextattr --noacl --keepParent "build/書庫.app" "$ZIP"
 
 echo ""
 echo "✅ 配布用zip: $(pwd)/$ZIP"
