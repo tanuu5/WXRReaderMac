@@ -1,25 +1,78 @@
 #!/usr/bin/env node
 /**
- * 書庫 MCP — WXRブログバックアップをClaudeから検索・閲覧できるようにするMCPサーバ。
+ * 書庫 MCP — WXRブログバックアップを Claude Desktop / ChatGPT / Codex から検索・閲覧できるようにするMCPサーバ。
  *
  * - 依存パッケージなし（Node標準ライブラリのみ）
  * - WXR解析とHTML→Markdown変換は macOSアプリ「書庫」(WXRReaderMac) のSwift実装からの移植
  * - ネットワーク送信は一切しない
+ * - Claude用の .mcpb（mcpb/）と ChatGPT・Codex用のプラグイン（plugins/shoko-chatgpt/）は、どちらもこのファイルを動かす
  *
- * 読み込み先は環境変数 SHOKO_WXR_DIR。.mcpb 経由の場合はインストール時に
- * Claude Desktop がフォルダ選択UIを出して設定する。
+ * 読み込み先は次の順で決める。
+ *   1. 環境変数 SHOKO_WXR_DIR（.mcpb はインストール時のフォルダ選択UIでこれを設定する）
+ *   2. 設定ファイル（plugins/shoko-chatgpt/scripts/configure.command が書く）
+ *   3. macOSアプリ「書庫」で最後に開いたフォルダ
  */
 
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const readline = require('readline');
+const { execFileSync } = require('child_process');
 
 const SERVER_NAME = 'shoko';
-const SERVER_VERSION = '1.1.3';
+const SERVER_VERSION = '1.2.0';
 
-const WXR_DIR = process.env.SHOKO_WXR_DIR || '';
+/** 応答できるプロトコル版（新しい順）。クライアントの要求がこの中になければ先頭を返す */
+const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
+
+function configPath() {
+  if (process.env.SHOKO_CONFIG_PATH) return process.env.SHOKO_CONFIG_PATH;
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Application Support', 'Shoko', 'mcp-config.json');
+  }
+  if (process.platform === 'win32' && process.env.APPDATA) {
+    return path.join(process.env.APPDATA, 'Shoko', 'mcp-config.json');
+  }
+  return path.join(os.homedir(), '.config', 'shoko', 'mcp-config.json');
+}
+
+function readConfiguredDir() {
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath(), 'utf8'));
+    return typeof config.wxr_dir === 'string' ? config.wxr_dir.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+/** 書庫アプリ（com.tanu.wxr-reader）が覚えている前回のフォルダ */
+function readAppLastFolder() {
+  if (process.platform !== 'darwin') return '';
+  try {
+    return execFileSync('/usr/bin/defaults', ['read', 'com.tanu.wxr-reader', 'lastFolder'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 2000,
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
+function resolveWxrDir() {
+  const candidates = [
+    [process.env.SHOKO_WXR_DIR || '', 'environment'],
+    [readConfiguredDir(), 'config'],
+    [readAppLastFolder(), 'WXRReaderMac'],
+  ];
+  for (const [value, source] of candidates) {
+    if (value) return { dir: path.resolve(value), source };
+  }
+  return { dir: '', source: 'unset' };
+}
+
+const WXR = resolveWxrDir();
+const WXR_DIR = WXR.dir;
 
 function log(msg) {
   // stdoutはJSON-RPC専用。ログは必ずstderrへ。
@@ -33,14 +86,21 @@ const TAXONOMY_RE =
   /<category\s+domain="(category|post_tag)"[^>]*>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/category>/g;
 const TAG_STRIP_RE = /<[^>]*>/g;
 
-const ENTITIES = [
-  ['&nbsp;', ' '], ['&amp;', '&'], ['&lt;', '<'],
-  ['&gt;', '>'], ['&quot;', '"'], ['&#39;', "'"], ['&#x27;', "'"],
-];
+const NAMED_ENTITIES = { nbsp: ' ', amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
 
+/**
+ * 実体参照を1回の走査で戻す。順に置き換えると "&amp;lt;" が "<" まで戻ってしまう。
+ * 数値参照（&#8217; &#x27; など）も戻す。残すと本文に生のまま出て、検索にも掛からない。
+ */
 function decodeEntities(s) {
-  for (const [from, to] of ENTITIES) s = s.split(from).join(to);
-  return s;
+  return s.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => {
+    if (e[0] === '#') {
+      const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : m;
+    }
+    const v = NAMED_ENTITIES[e.toLowerCase()];
+    return v === undefined ? m : v;
+  });
 }
 
 function unwrapCDATA(t) {
@@ -62,9 +122,12 @@ function tagContent(name, s) {
   return s.slice(b + 1, c).trim();
 }
 
+/** 段落などの区切り。ここを空けずに消すと隣の段落の語がくっつき、抜粋が読めず誤一致も起きる */
+const BLOCK_BREAK_RE = /<(?:br|\/(?:p|div|li|h[1-6]|blockquote|figure|figcaption|pre|tr|table|ul|ol))\b[^>]*>/gi;
+
 function stripHTML(html) {
   if (!html) return '';
-  return decodeEntities(html.replace(TAG_STRIP_RE, ''));
+  return decodeEntities(html.replace(BLOCK_BREAK_RE, '\n').replace(TAG_STRIP_RE, ''));
 }
 
 function countOccurrences(s, needle) {
@@ -77,15 +140,20 @@ function countOccurrences(s, needle) {
   }
 }
 
-/** CDATA内の "</item>" を誤検出しないよう、CDATA開閉数を照合して真の終端を探す */
+/**
+ * CDATA内の "</item>" を誤検出しないよう、CDATA区間を読み飛ばしながら真の終端を探す。
+ * （開閉の数を数える方式だと、本文に "<![CDATA[" という文字列があるだけで以降の記事をすべて落としていた）
+ */
 function findItemEnd(text, itemBodyStart) {
-  let searchFrom = itemBodyStart;
+  let pos = itemBodyStart;
   for (;;) {
-    const r = text.indexOf('</item>', searchFrom);
-    if (r < 0) return -1;
-    const seg = text.slice(itemBodyStart, r);
-    if (countOccurrences(seg, '<![CDATA[') <= countOccurrences(seg, ']]>')) return r;
-    searchFrom = r + 7;
+    const close = text.indexOf('</item>', pos);
+    if (close < 0) return -1;
+    const cdata = text.indexOf('<![CDATA[', pos);
+    if (cdata < 0 || cdata > close) return close;
+    const cdEnd = text.indexOf(']]>', cdata + 9);
+    if (cdEnd < 0) return -1;
+    pos = cdEnd + 3;
   }
 }
 
@@ -162,7 +230,7 @@ function parseItem(item, sourceFile) {
     excerpt: plain.slice(0, 400).trim(),
     contentHTML,
     plain,
-    wordCount: plain.length,
+    wordCount: plain.replace(/\n/g, '').length,
     categories,
     tags,
     sourceFile,
@@ -207,29 +275,30 @@ function htmlToMarkdown(html, title, date) {
   let b = html || '';
   for (let level = 1; level <= 5; level++) {
     const h = '#'.repeat(level);
-    b = rsub(b, `<h${level}[^>]*>(.*?)</h${level}>`, (_, x) => `\n${h} ${x.trim()}\n\n`);
+    b = rsub(b, `<h${level}\\b[^>]*>(.*?)</h${level}>`, (_, x) => `\n${h} ${x.trim()}\n\n`);
   }
-  b = rsub(b, '<strong[^>]*>(.*?)</strong>', (_, x) => `**${x}**`);
-  b = rsub(b, '<b[^>]*>(.*?)</b>', (_, x) => `**${x}**`);
-  b = rsub(b, '<em[^>]*>(.*?)</em>', (_, x) => `*${x}*`);
-  b = rsub(b, '<i[^>]*>(.*?)</i>', (_, x) => `*${x}*`);
-  b = rsub(b, '<del[^>]*>(.*?)</del>', (_, x) => `~~${x}~~`);
-  b = rsub(b, '<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>', (_, href, x) => `[${x}](${href})`);
-  b = rsub(b, '<img[^>]*src="([^"]*)"[^>]*alt="([^"]*)"[^>]*/?>', (_, src, alt) => `![${alt}](${src})`);
-  b = rsub(b, '<img[^>]*src="([^"]*)"[^>]*/?>', (_, src) => `![](${src})`);
-  b = rsub(b, '<figure[^>]*>(.*?)</figure>', (_, x) => `\n${x}\n`);
-  b = rsub(b, '<figcaption[^>]*>(.*?)</figcaption>', (_, x) => `*${x}*\n`);
-  b = rsub(b, '<li[^>]*>(.*?)</li>', (_, x) => `- ${x}\n`);
-  b = rsub(b, '</?[uo]l[^>]*>', () => '\n');
-  b = rsub(b, '<blockquote[^>]*>(.*?)</blockquote>',
+  b = rsub(b, '<strong\\b[^>]*>(.*?)</strong>', (_, x) => `**${x}**`);
+  b = rsub(b, '<b\\b[^>]*>(.*?)</b>', (_, x) => `**${x}**`);
+  b = rsub(b, '<em\\b[^>]*>(.*?)</em>', (_, x) => `*${x}*`);
+  b = rsub(b, '<i\\b[^>]*>(.*?)</i>', (_, x) => `*${x}*`);
+  b = rsub(b, '<del\\b[^>]*>(.*?)</del>', (_, x) => `~~${x}~~`);
+  b = rsub(b, '<a\\b[^>]*href="([^"]*)"[^>]*>(.*?)</a>', (_, href, x) => `[${x}](${href})`);
+  b = rsub(b, '<img\\b[^>]*src="([^"]*)"[^>]*alt="([^"]*)"[^>]*/?>', (_, src, alt) => `![${alt}](${src})`);
+  b = rsub(b, '<img\\b[^>]*src="([^"]*)"[^>]*/?>', (_, src) => `![](${src})`);
+  b = rsub(b, '<figure\\b[^>]*>(.*?)</figure>', (_, x) => `\n${x}\n`);
+  b = rsub(b, '<figcaption\\b[^>]*>(.*?)</figcaption>', (_, x) => `*${x}*\n`);
+  b = rsub(b, '<li\\b[^>]*>(.*?)</li>', (_, x) => `- ${x}\n`);
+  b = rsub(b, '</?[uo]l\\b[^>]*>', () => '\n');
+  b = rsub(b, '<blockquote\\b[^>]*>(.*?)</blockquote>',
     (_, x) => x.trim().split('\n').map((ln) => '> ' + ln.trim()).join('\n') + '\n\n');
-  b = rsub(b, '<pre[^>]*><code[^>]*>(.*?)</code></pre>', (_, x) => `\n\`\`\`\n${x}\n\`\`\`\n\n`);
-  b = rsub(b, '<code[^>]*>(.*?)</code>', (_, x) => `\`${x}\``);
+  b = rsub(b, '<pre\\b[^>]*><code[^>]*>(.*?)</code></pre>', (_, x) => `\n\`\`\`\n${x}\n\`\`\`\n\n`);
+  b = rsub(b, '<pre\\b[^>]*>(.*?)</pre>', (_, x) => `\n\`\`\`\n${x}\n\`\`\`\n\n`);
+  b = rsub(b, '<code\\b[^>]*>(.*?)</code>', (_, x) => `\`${x}\``);
   b = rsub(b, '<br\\s*/?>', () => '\n');
-  b = rsub(b, '<p[^>]*>(.*?)</p>', (_, x) => `${x}\n\n`);
-  b = rsub(b, '<hr[^>]*/?>', () => '\n---\n\n');
-  b = rsub(b, '<div[^>]*>(.*?)</div>', (_, x) => `${x}\n`);
-  b = rsub(b, '<iframe[^>]*src="([^"]*)"[^>]*>.*?</iframe>', (_, src) => `\n[埋め込み](${src})\n`);
+  b = rsub(b, '<p\\b[^>]*>(.*?)</p>', (_, x) => `${x}\n\n`);
+  b = rsub(b, '<hr\\b[^>]*/?>', () => '\n---\n\n');
+  b = rsub(b, '<div\\b[^>]*>(.*?)</div>', (_, x) => `${x}\n`);
+  b = rsub(b, '<iframe\\b[^>]*src="([^"]*)"[^>]*>.*?</iframe>', (_, src) => `\n[埋め込み](${src})\n`);
   b = rsub(b, '<[^>]*>', () => '');
 
   b = decodeEntities(b).replace(/\n{3,}/g, '\n\n').trim();
@@ -285,22 +354,74 @@ function fingerprintOf(files) {
 
 class ShokoError extends Error {}
 
+/** UTF-8 を基本に、BOM付き UTF-16 も読む（エディタで保存し直したXMLがこうなることがある） */
+function readText(f) {
+  const buf = fs.readFileSync(f);
+  if (buf[0] === 0xff && buf[1] === 0xfe) return buf.toString('utf16le', 2);
+  if (buf[0] === 0xfe && buf[1] === 0xff) {
+    const le = Buffer.from(buf.subarray(2));
+    le.swap16();
+    return le.toString('utf16le');
+  }
+  return buf.toString('utf8');
+}
+
+/**
+ * 記事として扱わない項目。WordPressのエクスポートには画像（attachment）やメニュー、
+ * ゴミ箱の記事まで入っている。これらが検索や重複チェックに混ざると、
+ * ゴミ箱の記事を根拠に「もう書いています」と答えてしまう。下書きは残す（書いたことには違いない）。
+ */
+const NON_CONTENT_TYPES = new Set([
+  'attachment', 'nav_menu_item', 'revision', 'custom_css', 'customize_changeset',
+  'oembed_cache', 'user_request', 'wp_block', 'wp_template', 'wp_template_part',
+  'wp_global_styles', 'wp_navigation', 'wp_font_family', 'wp_font_face',
+]);
+const NON_CONTENT_STATUSES = new Set(['trash', 'auto-draft', 'inherit']);
+
+function isContent(a) {
+  return !NON_CONTENT_TYPES.has(a.postType) && !NON_CONTENT_STATUSES.has(a.status);
+}
+
+/**
+ * 記事id。バックアップを取り直しても同じ記事には同じidが付くよう、リンクから作る。
+ * 読み込み順の通し番号だと、ファイルが増えたり並びが変わったりしたとき、
+ * 前の検索で得たidが黙って別の記事を指してしまう。
+ * （wp:post_id は note ではファイルごとに1から振り直されるので使えない）
+ */
+function stableId(a, used) {
+  const key = a.link || `${a.sourceFile}|${a.date}|${a.title}`;
+  let h = 0x811c9dc5; // FNV-1a 32bit
+  for (let i = 0; i < key.length; i++) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  let id = (h >>> 0) % 1000000000; // 9桁以内に収める
+  while (used.has(id)) id = (id + 1) % 1000000000; // 衝突はまず起きないが、起きても重ならないように
+  used.add(id);
+  return id;
+}
+
 /** 必要なら読み直す。呼ぶたびに鮮度を確認するので、呼び出し側は何も考えなくてよい。 */
 function ensureLoaded() {
+  // フォルダのフルパスはユーザー名を含むので、会話に流れるエラー文には入れない
   if (!WXR_DIR) {
     throw new ShokoError(
-      'バックアップフォルダが設定されていません。Claude Desktop の 設定 → 拡張機能 → 書庫 で、' +
+      'バックアップフォルダが設定されていません。Claude Desktop なら 設定 → 拡張機能 → 書庫 で、' +
+      'ChatGPT・Codex なら書庫アプリで一度フォルダを開くか scripts/configure.command で、' +
       'noteのWXR(.xml)が入っているフォルダを指定してください。'
     );
   }
   if (!fs.existsSync(WXR_DIR)) {
-    throw new ShokoError(`設定されたフォルダが見つかりません: ${WXR_DIR}`);
+    throw new ShokoError(
+      `設定されたバックアップフォルダ（${path.basename(WXR_DIR)}）が見つかりません。フォルダを指定し直してください。`
+    );
   }
 
   const files = collectXMLs(WXR_DIR);
   if (files.length === 0) {
     throw new ShokoError(
-      `${WXR_DIR} に .xml が見つかりません。noteのバックアップzipを展開したフォルダを指定してください。`
+      `設定されたフォルダ（${path.basename(WXR_DIR)}）に .xml が見つかりません。` +
+      'noteのバックアップzipを展開したフォルダを指定してください。'
     );
   }
 
@@ -311,21 +432,24 @@ function ensureLoaded() {
   const articles = [];
   let channelTitle = '';
   const seen = new Set();
+  const usedIds = new Set();
   for (const f of files) {
     const base = path.basename(f);
     if (seen.has(base)) continue; // アプリ側と同じくファイル名で重複除去
     seen.add(base);
     let text;
     try {
-      text = fs.readFileSync(f, 'utf8');
+      text = readText(f);
     } catch (e) {
-      log(`読めませんでした: ${f} (${e.message})`);
+      log(`読めませんでした: ${base} (${e.message})`);
       continue;
     }
     const r = parseWXR(text, base);
+    if (!r.articles.length) log(`${base} から記事を1件も読めませんでした（WXRでないか、文字コードが UTF-8 / UTF-16 以外）`);
     if (!channelTitle && r.channelTitle) channelTitle = r.channelTitle;
     for (const a of r.articles) {
-      a.id = articles.length;
+      if (!isContent(a)) continue;
+      a.id = stableId(a, usedIds);
       articles.push(a);
     }
   }
@@ -335,6 +459,33 @@ function ensureLoaded() {
   library.articles = articles;
   library.loadedAt = new Date().toISOString();
   log(`${files.length}ファイルから${articles.length}件を読み込みました (${Date.now() - started}ms)`);
+}
+
+// ---------------------------------------------------------------- 期間指定
+
+/**
+ * date_from / date_to を YYYY-MM-DD にそろえる。
+ * 記事の日付と文字列で比べるので、"2025-02" のまま date_to に使うと
+ * "2025-02-01" が "2025-02" より後と判定され、2月の記事が全部落ちていた。
+ * 年・年月だけの指定は、from なら期間の頭、to なら期間の終わりとして扱う。
+ */
+function normalizeDateArg(v, isEnd, name) {
+  if (v === undefined || v === null || v === '') return null;
+  const m = /^\s*(\d{4})(?:[-/.](\d{1,2})(?:[-/.](\d{1,2}))?)?\s*$/.exec(String(v));
+  if (!m) throw new ShokoError(`${name} は YYYY-MM-DD（または YYYY-MM / YYYY）で指定してください: ${v}`);
+  const y = m[1];
+  const mo = m[2] ? m[2].padStart(2, '0') : (isEnd ? '12' : '01');
+  let d = m[3] ? m[3].padStart(2, '0') : null;
+  if (!d) d = isEnd ? String(new Date(Date.UTC(Number(y), Number(mo), 0)).getUTCDate()) : '01';
+  return `${y}-${mo}-${d}`;
+}
+
+function dateFilter(list, args) {
+  const from = normalizeDateArg(args.date_from, false, 'date_from');
+  const to = normalizeDateArg(args.date_to, true, 'date_to');
+  if (from) list = list.filter((a) => a.date && a.date >= from);
+  if (to) list = list.filter((a) => a.date && a.date <= to);
+  return list;
 }
 
 // ---------------------------------------------------------------- 検索
@@ -441,6 +592,7 @@ function summarize(a, terms) {
     chars: a.wordCount,
   };
   if (a.postType !== 'post') d.post_type = a.postType;
+  if (a.status !== 'publish') d.status = a.status; // 下書き（draft）など。公開済みと区別できるように
   if (a.categories.length) d.categories = a.categories;
   if (a.tags.length) d.tags = a.tags;
   if (a.link) d.link = a.link;
@@ -461,6 +613,7 @@ function toolSearch(args) {
   // たくさん見たい場合は日付やタグで絞り込んで複数回に分けるのが正しい使い方。
   const limit = Math.max(1, Math.min(Number(args.limit) || 20, 50));
   const groups = query ? orGroups(query) : [];
+  if (query && !groups.length) throw new ShokoError('検索語がありません（OR だけでは検索できません）');
   const flat = groups.flat();
 
   let list = library.articles;
@@ -474,8 +627,7 @@ function toolSearch(args) {
     const t = args.tag.toLowerCase();
     list = list.filter((a) => a.tags.some((x) => x.toLowerCase().includes(t)));
   }
-  if (args.date_from) list = list.filter((a) => a.date && a.date >= args.date_from);
-  if (args.date_to) list = list.filter((a) => a.date && a.date <= args.date_to);
+  list = dateFilter(list, args);
   if (groups.length) {
     list = list.filter((a) => groups.some((g) => g.every((t) => hasTerm(a, t))));
   }
@@ -777,7 +929,12 @@ function similarTo(titleText, bodyText, excludeId, limit, floorAbs) {
     }
     if (s > 0) scored.push({ a: x, s: (100 * s) / full });
   }
-  scored.sort((p, q) => (q.s !== p.s ? q.s - p.s : (q.a.date || '') < (p.a.date || '') ? -1 : 1));
+  scored.sort((p, q) => {
+    if (q.s !== p.s) return q.s - p.s;
+    const dp = p.a.date || '', dq = q.a.date || '';
+    if (dp !== dq) return dp < dq ? 1 : -1; // 同点なら新しい方
+    return p.a.id - q.a.id;
+  });
 
   // 上位から大きく離れたものは「たまたま語が重なっただけ」。足切りする。
   if (!scored.length) return { hits: [], termCount: terms.size, ratio: 0 };
@@ -871,10 +1028,10 @@ function toolTopicTimeline(args) {
   if (!query) throw new ShokoError('query を指定してください');
   const limit = Math.max(1, Math.min(Number(args.limit) || 40, 100));
   const groups = orGroups(query);
+  if (!groups.length) throw new ShokoError('検索語がありません（OR だけでは検索できません）');
 
   let list = library.articles.filter((a) => a.postType === 'post');
-  if (args.date_from) list = list.filter((a) => a.date && a.date >= args.date_from);
-  if (args.date_to) list = list.filter((a) => a.date && a.date <= args.date_to);
+  list = dateFilter(list, args);
   list = list.filter((a) => groups.some((g) => g.every((t) => hasTerm(a, t))));
 
   list.sort((x, y) => {
@@ -890,11 +1047,12 @@ function toolTopicTimeline(args) {
     byMonth[mk] = (byMonth[mk] || 0) + 1;
   }
 
+  const dated = list.filter((a) => a.date); // 日付なしは並びの先頭に来るので、期間には使わない
   const out = {
     query,
     total_matched: list.length,
-    first: list.length ? list[0].date : null,
-    last: list.length ? list[list.length - 1].date : null,
+    first: dated.length ? dated[0].date : null,
+    last: dated.length ? dated[dated.length - 1].date : null,
     by_month: byMonth,
     returned: Math.min(list.length, limit),
     articles: [],
@@ -938,7 +1096,11 @@ function toolGetArticle(args) {
     const t = args.title.toLowerCase();
     const hits = library.articles
       .filter((x) => x.title.toLowerCase().includes(t))
-      .sort((x, y) => ((y.date || '') < (x.date || '') ? -1 : 1));
+      .sort((x, y) => {
+        const dx = x.date || '', dy = y.date || '';
+        if (dx !== dy) return dx < dy ? 1 : -1;
+        return x.id - y.id;
+      });
     a = hits[0] || null;
   } else {
     throw new ShokoError('id / link / title のいずれかを指定してください');
@@ -951,6 +1113,12 @@ function toolGetArticle(args) {
   else if (fmt === 'text') out.content = a.plain;
   else out.content = htmlToMarkdown(a.contentHTML, a.title, a.date);
   return out;
+}
+
+function statusCounts(arts) {
+  const m = {};
+  for (const a of arts) m[a.status] = (m[a.status] || 0) + 1;
+  return m;
 }
 
 function toolLibraryInfo() {
@@ -976,7 +1144,9 @@ function toolLibraryInfo() {
     total_characters: arts.reduce((n, a) => n + a.wordCount, 0),
     top_categories: top(cats),
     top_tags: top(tags),
-    wxr_dir: WXR_DIR,
+    statuses: statusCounts(arts),
+    data_location: 'local',
+    configuration_source: WXR.source,
     loaded_at: library.loadedAt,
   };
   // 空の分類を黙って返すと、使えない絞り込みを試させることになる。
@@ -1088,6 +1258,24 @@ const TOOLS = [
   },
 ];
 
+const TOOL_TITLES = {
+  library_info: '書庫の概要',
+  search_articles: '記事を検索',
+  find_similar: '似た記事を探す',
+  topic_timeline: '話題を時系列で並べる',
+  get_article: '記事本文を取得',
+};
+
+// どれも手元のファイルを読むだけ。クライアントが確認なしで呼べるよう明示する
+for (const tool of TOOLS) {
+  tool.title = TOOL_TITLES[tool.name];
+  tool.annotations = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
+}
+
+const INSTRUCTIONS =
+  '書庫はローカルのWXRブログバックアップを読み取り専用で検索します。' +
+  'まず search_articles などで候補を絞り、本文が必要な記事だけ get_article で取得してください。';
+
 const HANDLERS = {
   library_info: toolLibraryInfo,
   search_articles: toolSearch,
@@ -1101,16 +1289,24 @@ function send(obj) {
 }
 
 function handle(msg) {
-  const { method, id, params = {} } = msg;
+  if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+    send({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'invalid request' } });
+    return;
+  }
+  const { method, id } = msg;
+  // "params": null を送ってくるクライアントもある。既定値の構文では null を拾えない
+  const params = msg.params && typeof msg.params === 'object' ? msg.params : {};
 
   if (method === 'initialize') {
+    const asked = params.protocolVersion;
     send({
       jsonrpc: '2.0',
       id,
       result: {
-        protocolVersion: params.protocolVersion || '2024-11-05',
+        protocolVersion: PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0],
         capabilities: { tools: {} },
         serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
+        instructions: INSTRUCTIONS,
       },
     });
     return;
@@ -1126,7 +1322,7 @@ function handle(msg) {
   if (method === 'tools/call') {
     const fn = HANDLERS[params.name];
     if (!fn) {
-      send({ jsonrpc: '2.0', id, error: { code: -32601, message: `unknown tool: ${params.name}` } });
+      send({ jsonrpc: '2.0', id, error: { code: -32602, message: `unknown tool: ${params.name}` } });
       return;
     }
     try {
@@ -1135,6 +1331,7 @@ function handle(msg) {
       send({
         jsonrpc: '2.0',
         id,
+        // structuredContent は付けない。クライアントによっては text と二重にモデルへ渡り、文脈を倍食うため
         result: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
       });
     } catch (e) {
@@ -1169,7 +1366,7 @@ function main() {
     return;
   }
 
-  log(`WXR_DIR=${WXR_DIR || '(未設定)'}`);
+  log(`読み込み先: ${WXR.source}${WXR_DIR ? ` (${path.basename(WXR_DIR)})` : ''}`);
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   rl.on('line', (line) => {
     const s = line.trim();
@@ -1178,6 +1375,7 @@ function main() {
     try {
       msg = JSON.parse(s);
     } catch {
+      send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } });
       return;
     }
     try {

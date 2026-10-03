@@ -4,6 +4,8 @@ Claude Desktopから、noteなどのブログバックアップを検索・閲�
 
 書庫アプリとは独立して動きます。アプリのインストールも起動も不要です。WXRの解析とMarkdown変換はアプリ（`Sources/WXRReader/WXRParser.swift`、`HTMLToMarkdown.swift`）からの移植なので、読み取る内容はアプリと一致します。検索の並び順だけは、目で一覧を眺めるアプリと、限られた件数しか見ないClaudeとで求められるものが違うため、この拡張機能側で作り直しています（後述）。
 
+同じサーバは、ChatGPT・Codex用のプラグイン（[plugins/shoko-chatgpt/](../plugins/shoko-chatgpt/README.md)）でも動いています。
+
 ## インストール
 
 1. [Releases](https://github.com/tanuu5/WXRReaderMac/releases) から `shoko.mcpb` をダウンロード
@@ -96,26 +98,46 @@ Claude Desktopから、noteなどのブログバックアップを検索・閲�
 依存パッケージはありません。Node標準ライブラリのみで動きます。
 
 ```bash
-# 動作確認（読み込めるか、記事数は合っているか）
+# テスト（テスト用のWXRを作って、全ツールとプロトコルの応答を確かめる）
+node test/smoke.js
+
+# 実データで確認（読み込めるか、記事数は合っているか）
 SHOKO_WXR_DIR=/path/to/backup node server/index.js --selftest
 
 # .mcpb を作る
 ./pack.sh
 ```
 
-`pack.sh` は `@anthropic-ai/mcpb` をnpx経由で呼び、`../build/shoko.mcpb` を出力します。
+`pack.sh` は、サーバを ChatGPT・Codex 用プラグイン（`../plugins/shoko-chatgpt/server/`）にもコピーしてから、`@anthropic-ai/mcpb` をnpx経由で呼び、`../build/shoko.mcpb` を出力します。サーバの正本はこの `server/index.js` です。
 
 構成:
 
 ```
 mcpb/
   manifest.json     # 拡張機能の定義（ツール一覧・フォルダ選択UIの定義）
-  server/index.js   # MCPサーバ本体（WXR解析・検索・Markdown変換）
+  server/index.js   # MCPサーバ本体（WXR解析・検索・Markdown変換）。ChatGPT・Codex用プラグインと共通
+  test/smoke.js     # テスト（.mcpb には含めない）
   icon.png
   pack.sh
 ```
 
 ## 変更履歴
+
+### v1.2.0
+
+ChatGPT・Codex用プラグインとサーバを1本にまとめ、レビューで見つかった不具合を直しました。
+
+- **本文に `<![CDATA[` という文字列を含む記事があると、同じファイルの以降の記事がすべて読み込まれなかった**のを修正
+- Markdown変換で `<br>` や `<blockquote>` を太字、`<img>` を斜体と取り違えて本文が崩れていたのを修正（`get_article` の既定の出力）
+- 記事のidを、リンクから作る固定の番号に変更。バックアップを入れ替えたとき、前の検索で得たidが別の記事を指すことがなくなります（noteの `wp:post_id` はファイルごとに1から振り直されるため使えません）
+- `date_from` / `date_to` に `2025-02` や `2025` を渡すと、その月・年の記事が落ちていたのを修正。年・年月だけの指定も受け付け、形式が違えばエラーにします
+- WordPressのゴミ箱の記事や添付ファイルなどを、検索と重複チェックから除外。下書きは残し、結果に `status: "draft"` と付けて区別します
+- `library_info` がバックアップフォルダのフルパス（ユーザー名を含む）を返していたのをやめ、`statuses`（公開・下書きの内訳）を追加
+- インストール時の既定フォルダ（書類フォルダ全体）を外しました。そのまま進めると書類フォルダ中の .xml をすべて読んでいたため
+- 実体参照の戻し方を修正（`&amp;lt;` が `<` まで戻っていた。`&#8217;` などの数値参照も戻す）。段落の境目で語がくっつかないようにした
+- プロトコルまわり: 知らないプロトコル版をそのまま返さない、`params: null` で応答が止まらない、壊れた行には parse error を返す、未知のツールは -32602
+- ツールに読み取り専用の注釈（`readOnlyHint`）と表示名を付けた
+- バックアップフォルダは、環境変数がなければ設定ファイル、書庫アプリの前回のフォルダの順で探す（ChatGPT・Codex用。Claude Desktopでは従来どおりインストール時に選んだフォルダ）
 
 ### v1.1.3
 

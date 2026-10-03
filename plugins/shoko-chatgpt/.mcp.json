@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "shoko": {
+      "command": "node",
+      "args": ["./server/index.js"],
+      "cwd": ".",
+      "env_vars": ["SHOKO_WXR_DIR", "SHOKO_CONFIG_PATH"]
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "shoko-chatgpt",
+  "version": "1.2.0",
+  "description": "ローカルのWXRブログアーカイブをChatGPTから検索・参照する読み取り専用プラグイン",
+  "author": {
+    "name": "たぬ",
+    "url": "https://github.com/tanuu5"
+  },
+  "homepage": "https://github.com/tanuu5/WXRReaderMac",
+  "repository": "https://github.com/tanuu5/WXRReaderMac",
+  "license": "MIT",
+  "keywords": ["note", "blog", "wxr", "archive", "search", "wordpress"],
+  "interface": {
+    "displayName": "書庫 — ブログアーカイブ検索",
+    "shortDescription": "過去のブログ記事をローカル検索",
+    "longDescription": "noteやWordPressのWXRバックアップをMac内で解析し、必要な検索結果や記事だけをChatGPTへ渡します。検索、関連記事候補、話題の時系列、本文取得に対応します。",
+    "developerName": "たぬ",
+    "category": "Productivity",
+    "capabilities": ["Read"],
+    "defaultPrompt": [
+      "書庫にClaude関係の記事がどれくらいあるか調べて",
+      "去年書いたSwiftの記事を探して要点をまとめて",
+      "この企画と似た過去記事がないか確認して"
+    ],
+    "brandColor": "#7FAE8B",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png"
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -2,3 +2,4 @@
 *.mcpb
 node_modules/
 pack.sh
+test/
