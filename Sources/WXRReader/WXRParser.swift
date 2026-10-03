@@ -52,33 +52,25 @@ enum WXRParser {
         return Result(channelTitle: channelTitle, channelLink: channelLink, articles: articles)
     }
 
-    /// CDATA内の "</item>" を誤検出しないよう、CDATA開閉数を照合して真の終端を探す
+    /// CDATA内の "</item>" を誤検出しないよう、CDATA区間を読み飛ばしながら真の終端を探す。
+    /// （開閉の数を数える方式だと、本文に "<![CDATA[" という文字列があるだけで以降の記事をすべて落としていた）
     private static func findItemEnd(_ ns: NSString, itemBodyStart: Int, totalLength: Int) -> Int? {
-        var searchFrom = itemBodyStart
-        while searchFrom < totalLength {
-            let r = ns.range(of: "</item>", options: [],
-                             range: NSRange(location: searchFrom, length: totalLength - searchFrom))
-            if r.location == NSNotFound { return nil }
-            let seg = NSRange(location: itemBodyStart, length: r.location - itemBodyStart)
-            let opens = countOccurrences(ns, of: "<![CDATA[", in: seg)
-            let closes = countOccurrences(ns, of: "]]>", in: seg)
-            if opens <= closes { return r.location }
-            searchFrom = r.location + 7
+        var pos = itemBodyStart
+        while pos < totalLength {
+            let close = ns.range(of: "</item>", options: [],
+                                 range: NSRange(location: pos, length: totalLength - pos))
+            if close.location == NSNotFound { return nil }
+            let cdata = ns.range(of: "<![CDATA[", options: [],
+                                 range: NSRange(location: pos, length: close.location - pos))
+            if cdata.location == NSNotFound { return close.location }
+            // CDATAの中身は "]]>" まで文字列として読み飛ばす
+            let bodyStart = cdata.location + cdata.length
+            let cdEnd = ns.range(of: "]]>", options: [],
+                                 range: NSRange(location: bodyStart, length: totalLength - bodyStart))
+            if cdEnd.location == NSNotFound { return nil }
+            pos = cdEnd.location + cdEnd.length
         }
         return nil
-    }
-
-    private static func countOccurrences(_ ns: NSString, of needle: String, in range: NSRange) -> Int {
-        var count = 0
-        var loc = range.location
-        let end = range.location + range.length
-        while loc < end {
-            let r = ns.range(of: needle, options: [], range: NSRange(location: loc, length: end - loc))
-            if r.location == NSNotFound { break }
-            count += 1
-            loc = r.location + r.length
-        }
-        return count
     }
 
     // MARK: - Item

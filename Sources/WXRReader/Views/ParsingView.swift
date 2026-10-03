@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 struct ParsingView: View {
     @EnvironmentObject var state: AppState

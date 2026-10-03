@@ -32,10 +32,17 @@ struct StatsPanel: View {
 
     private var heatmapSection: some View {
         sectionBox("🟩 投稿カレンダー") {
-            HStack(spacing: 14) {
-                badge("\(stats.currentStreak)", "現在の連続日数")
-                badge("\(stats.longestStreak)", "最長連続日数")
-                badge("\(stats.totalDays)", "投稿した日数")
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 14) {
+                    badge("\(stats.dayStreak.current)", "現在の連続日数")
+                    badge("\(stats.dayStreak.longest)", "最長連続日数", help: periodLabel(stats.dayStreak))
+                    badge("\(stats.totalDays)", "投稿した日数")
+                }
+                HStack(spacing: 14) {
+                    badge("\(stats.weekStreak.current)", "現在の連続週数")
+                    badge("\(stats.weekStreak.longest)", "最長連続週数", help: periodLabel(stats.weekStreak))
+                    badge("\(stats.totalWeeks)", "投稿した週数")
+                }
             }
             HeatmapView(daily: stats.daily, sortedDays: stats.sortedDays)
             HStack(spacing: 4) {
@@ -48,13 +55,21 @@ struct StatsPanel: View {
         }
     }
 
-    private func badge(_ num: String, _ label: String) -> some View {
+    private func badge(_ num: String, _ label: String, help: String? = nil) -> some View {
         VStack(spacing: 0) {
             Text(num).font(Theme.serif(20, bold: true)).foregroundColor(Theme.accent)
             Text(label).font(.system(size: 10)).foregroundColor(Theme.text3)
         }
+        .frame(minWidth: 96)
         .padding(.horizontal, 16).padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 8).fill(Theme.bg))
+        .help(help ?? "")
+    }
+
+    /// 最長連続の期間（ポインタを重ねると表示）
+    private func periodLabel(_ s: Streak) -> String? {
+        guard let from = s.longestFrom, let to = s.longestTo else { return nil }
+        return from == to ? from : "\(from) 〜 \(to)"
     }
 
     // MARK: - 月間チャート
@@ -275,7 +290,7 @@ struct HeatmapView: View {
             switch phase {
             case .active(let p):
                 hoverPoint = p
-                hoverLabel = labelAt(p, wks: weeks)
+                hoverLabel = labelAt(p, wks: wks)
             case .ended:
                 hoverLabel = nil
             }

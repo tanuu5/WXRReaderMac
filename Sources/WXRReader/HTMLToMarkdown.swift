@@ -11,35 +11,36 @@ enum HTMLToMarkdown {
         var b = html
         // 見出し h1-h5
         for level in 1...5 {
-            b = replace(b, "<h\(level)[^>]*>(.*?)</h\(level)>") { m in
+            b = replace(b, "<h\(level)\\b[^>]*>(.*?)</h\(level)>") { m in
                 "\n" + String(repeating: "#", count: level) + " " + m[1].trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n"
             }
         }
-        b = replace(b, "<strong[^>]*>(.*?)</strong>") { "**\($0[1])**" }
-        b = replace(b, "<b[^>]*>(.*?)</b>") { "**\($0[1])**" }
-        b = replace(b, "<em[^>]*>(.*?)</em>") { "*\($0[1])*" }
-        b = replace(b, "<i[^>]*>(.*?)</i>") { "*\($0[1])*" }
-        b = replace(b, "<del[^>]*>(.*?)</del>") { "~~\($0[1])~~" }
-        b = replace(b, "<a[^>]*href=\"([^\"]*)\"[^>]*>(.*?)</a>") { "[\($0[2])](\($0[1]))" }
-        b = replace(b, "<img[^>]*src=\"([^\"]*)\"[^>]*alt=\"([^\"]*)\"[^>]*/?>") { "![\($0[2])](\($0[1]))" }
-        b = replace(b, "<img[^>]*src=\"([^\"]*)\"[^>]*/?>") { "![](\($0[1]))" }
-        b = replace(b, "<figure[^>]*>(.*?)</figure>") { "\n\($0[1])\n" }
-        b = replace(b, "<figcaption[^>]*>(.*?)</figcaption>") { "*\($0[1])*\n" }
-        b = replace(b, "<li[^>]*>(.*?)</li>") { "- \($0[1])\n" }
-        b = replace(b, "</?[uo]l[^>]*>") { _ in "\n" }
-        b = replace(b, "<blockquote[^>]*>(.*?)</blockquote>") { m in
+        b = replace(b, "<strong\\b[^>]*>(.*?)</strong>") { "**\($0[1])**" }
+        b = replace(b, "<b\\b[^>]*>(.*?)</b>") { "**\($0[1])**" }
+        b = replace(b, "<em\\b[^>]*>(.*?)</em>") { "*\($0[1])*" }
+        b = replace(b, "<i\\b[^>]*>(.*?)</i>") { "*\($0[1])*" }
+        b = replace(b, "<del\\b[^>]*>(.*?)</del>") { "~~\($0[1])~~" }
+        b = replace(b, "<a\\b[^>]*href=\"([^\"]*)\"[^>]*>(.*?)</a>") { "[\($0[2])](\($0[1]))" }
+        b = replace(b, "<img\\b[^>]*src=\"([^\"]*)\"[^>]*alt=\"([^\"]*)\"[^>]*/?>") { "![\($0[2])](\($0[1]))" }
+        b = replace(b, "<img\\b[^>]*src=\"([^\"]*)\"[^>]*/?>") { "![](\($0[1]))" }
+        b = replace(b, "<figure\\b[^>]*>(.*?)</figure>") { "\n\($0[1])\n" }
+        b = replace(b, "<figcaption\\b[^>]*>(.*?)</figcaption>") { "*\($0[1])*\n" }
+        b = replace(b, "<li\\b[^>]*>(.*?)</li>") { "- \($0[1])\n" }
+        b = replace(b, "</?[uo]l\\b[^>]*>") { _ in "\n" }
+        b = replace(b, "<blockquote\\b[^>]*>(.*?)</blockquote>") { m in
             m[1].trimmingCharacters(in: .whitespacesAndNewlines)
                 .components(separatedBy: "\n")
                 .map { "> " + $0.trimmingCharacters(in: .whitespaces) }
                 .joined(separator: "\n") + "\n\n"
         }
-        b = replace(b, "<pre[^>]*><code[^>]*>(.*?)</code></pre>") { "\n```\n\($0[1])\n```\n\n" }
-        b = replace(b, "<code[^>]*>(.*?)</code>") { "`\($0[1])`" }
+        b = replace(b, "<pre\\b[^>]*><code[^>]*>(.*?)</code></pre>") { "\n```\n\($0[1])\n```\n\n" }
+        b = replace(b, "<pre\\b[^>]*>(.*?)</pre>") { "\n```\n\($0[1])\n```\n\n" }
+        b = replace(b, "<code\\b[^>]*>(.*?)</code>") { "`\($0[1])`" }
         b = replace(b, "<br\\s*/?>") { _ in "\n" }
-        b = replace(b, "<p[^>]*>(.*?)</p>") { "\($0[1])\n\n" }
-        b = replace(b, "<hr[^>]*/?>") { _ in "\n---\n\n" }
-        b = replace(b, "<div[^>]*>(.*?)</div>") { "\($0[1])\n" }
-        b = replace(b, "<iframe[^>]*src=\"([^\"]*)\"[^>]*>.*?</iframe>") { "\n[埋め込み](\($0[1]))\n" }
+        b = replace(b, "<p\\b[^>]*>(.*?)</p>") { "\($0[1])\n\n" }
+        b = replace(b, "<hr\\b[^>]*/?>") { _ in "\n---\n\n" }
+        b = replace(b, "<div\\b[^>]*>(.*?)</div>") { "\($0[1])\n" }
+        b = replace(b, "<iframe\\b[^>]*src=\"([^\"]*)\"[^>]*>.*?</iframe>") { "\n[埋め込み](\($0[1]))\n" }
         b = replace(b, "<[^>]*>") { _ in "" }
 
         b = b.replacingOccurrences(of: "&nbsp;", with: " ")

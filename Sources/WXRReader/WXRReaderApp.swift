@@ -19,6 +19,8 @@ struct WXRReaderApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        // 配色は和紙×深緑のライト専用。ダークモードのままだと検索欄など標準部品の文字が白くなり読めないため固定する
+        NSApp.appearance = NSAppearance(named: .aqua)
         NSApp.activate(ignoringOtherApps: true)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
