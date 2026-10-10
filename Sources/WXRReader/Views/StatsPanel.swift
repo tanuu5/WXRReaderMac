@@ -193,15 +193,15 @@ struct HeatmapView: View {
     private static let topPad: CGFloat = 20
     private static let contentID = "heatmap"
 
-    /// 週ごとの日付列（先頭週の日曜から末尾週の土曜まで）
+    /// 週ごとの日付列（先頭週の月曜から末尾週の日曜まで）
     private var weeks: [[Date]] {
         guard let firstKey = sortedDays.first, let lastKey = sortedDays.last,
               let first = Fmt.dateKey.date(from: firstKey),
               let last = Fmt.dateKey.date(from: lastKey) else { return [] }
         let cal = Calendar.current
-        let startOffset = cal.component(.weekday, from: first) - 1   // 日曜=1
+        let startOffset = cal.daysFromMonday(first)
         let start = cal.date(byAdding: .day, value: -startOffset, to: first)!
-        let endOffset = 7 - cal.component(.weekday, from: last)
+        let endOffset = 6 - cal.daysFromMonday(last)
         let end = cal.date(byAdding: .day, value: endOffset, to: last)!
 
         var out: [[Date]] = []
@@ -209,7 +209,7 @@ struct HeatmapView: View {
         var cur = start
         while cur <= end {
             week.append(cur)
-            if cal.component(.weekday, from: cur) == 7 { out.append(week); week = [] }
+            if cal.daysFromMonday(cur) == 6 { out.append(week); week = [] }
             cur = cal.date(byAdding: .day, value: 1, to: cur)!
         }
         if !week.isEmpty { out.append(week) }
@@ -251,11 +251,11 @@ struct HeatmapView: View {
     private func canvas(wks: [[Date]]) -> some View {
         Canvas { ctx, _ in
             let cal = Calendar.current
-            // 曜日ラベル（月・水・金）
-            let dayLabels = [1: "", 2: "月", 3: "", 4: "水", 5: "", 6: "金", 7: ""]
-            for dow in 1...7 {
-                if let s = dayLabels[dow], !s.isEmpty {
-                    let y = Self.topPad + CGFloat(dow - 1) * Self.unit + Self.cell - 2
+            // 曜日ラベル（上から月〜日。月・水・金だけ表示）
+            let dayLabels = [0: "月", 2: "水", 4: "金"]
+            for dow in 0..<7 {
+                if let s = dayLabels[dow] {
+                    let y = Self.topPad + CGFloat(dow) * Self.unit + Self.cell - 2
                     ctx.draw(Text(s).font(.system(size: 9)).foregroundColor(Theme.text3),
                              at: CGPoint(x: Self.leftPad - 8, y: y), anchor: .trailing)
                 }
@@ -276,7 +276,7 @@ struct HeatmapView: View {
                     }
                 }
                 for day in week {
-                    let dow = cal.component(.weekday, from: day) - 1
+                    let dow = cal.daysFromMonday(day)
                     let key = Fmt.dateKey.string(from: day)
                     let count = daily[key] ?? 0
                     let color: Color
@@ -310,7 +310,7 @@ struct HeatmapView: View {
         let dow = Int((p.y - Self.topPad) / Self.unit)
         guard wi >= 0, wi < wks.count, dow >= 0, dow < 7 else { return nil }
         let cal = Calendar.current
-        guard let day = wks[wi].first(where: { cal.component(.weekday, from: $0) - 1 == dow })
+        guard let day = wks[wi].first(where: { cal.daysFromMonday($0) == dow })
         else { return nil }
         let key = Fmt.dateKey.string(from: day)
         return "\(key)：\(daily[key] ?? 0)件"

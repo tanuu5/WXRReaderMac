@@ -14,7 +14,7 @@ struct BlogStats {
     var cats: [(name: String, count: Int)]
     var tags: [(name: String, count: Int)]
     var dayStreak: Streak         // 毎日の連続
-    var weekStreak: Streak        // 毎週の連続（日曜始まり。ヒートマップの列と同じ区切り）
+    var weekStreak: Streak        // 毎週の連続（月曜始まり。noteの連続投稿週の数え方、ヒートマップの列と同じ区切り）
     var totalDays: Int
     var totalWeeks: Int
 }
@@ -100,18 +100,26 @@ enum Stats {
         return out
     }
 
-    /// その日を含む週の日曜日 "yyyy-MM-dd"
+    /// その日を含む週の月曜日 "yyyy-MM-dd"
     private static func weekStart(_ key: String, _ cal: Calendar) -> String? {
-        guard let d = Fmt.dateKey.date(from: key) else { return nil }
-        let offset = cal.component(.weekday, from: d) - 1   // 日曜=1
-        guard let sunday = cal.date(byAdding: .day, value: -offset, to: d) else { return nil }
-        return Fmt.dateKey.string(from: sunday)
+        guard let d = Fmt.dateKey.date(from: key),
+              let monday = cal.date(byAdding: .day, value: -cal.daysFromMonday(d), to: d) else { return nil }
+        return Fmt.dateKey.string(from: monday)
     }
 
     private static func shift(_ key: String, by days: Int, _ cal: Calendar) -> String {
         guard let d = Fmt.dateKey.date(from: key),
               let nd = cal.date(byAdding: .day, value: days, to: d) else { return "" }
         return Fmt.dateKey.string(from: nd)
+    }
+}
+
+extension Calendar {
+    /// 月曜=0 … 日曜=6。週は月曜始まりで数える。
+    /// noteの「連続投稿週」と同じ区切りにするため（日曜始まりだと、土曜に書いて翌週は日曜に書いた場合に
+    /// 間の週が空いた扱いになり、noteより大幅に短く出ていた）
+    func daysFromMonday(_ d: Date) -> Int {
+        (component(.weekday, from: d) + 5) % 7   // weekday: 日曜=1, 月曜=2 … 土曜=7
     }
 }
 

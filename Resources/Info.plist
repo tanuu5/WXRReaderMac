@@ -11,9 +11,9 @@
     <key>CFBundleExecutable</key>
     <string>WXRReader</string>
     <key>CFBundleVersion</key>
-    <string>2</string>
+    <string>3</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.1</string>
+    <string>1.1.1</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleInfoDictionaryVersion</key>
